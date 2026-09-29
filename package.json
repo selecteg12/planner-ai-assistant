@@ -1,0 +1,24 @@
+{
+  "name": "planner-ai-assistant",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test read-tools.test.js task-tools.test.js event-tools.test.js habit-tools.test.js idea-tools.test.js reminder-tools.test.js scheduler.test.js morning-summary.test.js ai-assistant.test.js",
+    "scheduler": "node scheduler.js",
+    "set-webhook": "node scripts/set-webhook.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
+    "dotenv": "^18.0.1",
+    "openai": "^7.20.0",
+    "telegraf": "^4.16.3"
+  }
+}
