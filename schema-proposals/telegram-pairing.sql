@@ -30,6 +30,9 @@ create unique index if not exists telegram_users_supabase_user_pairing_uidx
 
 grant usage on schema public to service_role;
 grant select, insert, update on table public.telegram_users to service_role;
+grant select, insert, update, delete
+  on table public.tasks, public.events, public.habits, public.habit_completions
+  to service_role;
 
 create table if not exists public.telegram_pairing_codes (
   code_hash text primary key check (code_hash ~ '^[0-9a-f]{64}$'),

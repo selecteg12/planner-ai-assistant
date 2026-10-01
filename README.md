@@ -6,7 +6,9 @@ An AI-powered Telegram interface for an existing personal planner. The assistant
 
 ## What it can do
 
-### Ask about your plan
+Talk to the bot in natural language after connecting your Planner account. It can use the following Planner actions:
+
+### Read your plan
 
 - Show today's events, tasks, overdue tasks, and habit check-ins.
 - List tasks by status or time range: open, due today, overdue, future, or all.
@@ -15,16 +17,18 @@ An AI-powered Telegram interface for an existing personal planner. The assistant
 - Summarize a week of events, tasks, and habits.
 - Read ideas saved in Planner, with archived ideas included only when requested.
 
-### Make changes from Telegram
+### Update Planner from Telegram
 
-- Create and edit tasks, set deadlines and priorities, and mark tasks complete.
-- Create, edit, and delete calendar events. Supported recurrence options are daily, weekly, monthly, and yearly, with an end date.
-- Mark a habit complete or undo its completion for a date.
-- Save ideas, edit their title or category, archive or restore them, and delete them.
-- Create a one-time reminder or cancel a pending reminder.
-- Confirm task, event, and idea deletions before carrying them out.
+- **Tasks:** create tasks with an optional note, deadline, and low/medium/high priority; edit them; mark them complete; or delete them.
+- **Events:** create and edit calendar events with a title, start/end time, and color. Daily, weekly, monthly, and yearly recurrence is supported with an end date. Events can also be deleted.
+- **Habits:** mark an existing habit complete for a date or undo that completion. The bot does not create or rename habits.
+- **Ideas:** save ideas, view them, change their title or category, archive or restore them, and delete them.
+- **Reminders:** create one-time reminders for a future date and time, or cancel a reminder that has not been sent.
+- **Deletion safety:** deleting a task, event, or idea requires a separate confirmation in Telegram. Use `/cancel` to cancel a pending deletion or pairing flow.
 
 The assistant uses a constrained set of typed tools to perform Planner operations. It does not expose arbitrary database queries to the language model.
+
+For example, after linking you can ask “Что у меня сегодня?”, “Покажи задачи на следующую неделю”, “Добавь задачу позвонить врачу завтра с высоким приоритетом”, or “Напомни мне отправить отчёт сегодня в 18:00”. The model can ask a follow-up question when required details, such as an event time, are missing.
 
 ## How it works
 
@@ -46,13 +50,15 @@ flowchart LR
 2. Planner generates a random one-time code and asks Supabase to store only its SHA-256 hash for the signed-in user. The code expires after 10 minutes; a new code can be issued at most once per minute.
 3. The user sends `/start` to the Telegram bot and submits the code.
 4. A server-only Supabase function validates and consumes the code atomically, then records the Telegram ID to Supabase user ID mapping in `telegram_users`.
-5. Each Planner tool resolves the linked Supabase user ID and scopes its database operations to that user's records.
+5. Each Planner tool resolves the linked Supabase user ID and scopes its database operations to that user's records. The link is one Planner account per Telegram account and one Telegram account per Planner account.
 
 No email or SMTP setup is needed for Telegram linking. The Planner browser uses its public Supabase key for the signed-in user's pairing request; the bot uses the Supabase secret key only on the server to consume a code and perform Planner operations.
 
 ### Assistant requests
 
 Natural-language messages are sent to the configured OpenAI-compatible API. The model can select only declared Planner tools; each tool validates inputs and performs a scoped Supabase operation. Destructive task, event, and idea deletions are held for a separate user confirmation. Dates and event recurrences are interpreted using the configured planner timezone.
+
+The bot does not provide a separate `/help` command. Start or restart the conversation with `/start`; if the Telegram session was reset, the bot restores the existing account link from Supabase. Send `/cancel` while a pairing code or deletion confirmation is pending to abandon that step.
 
 ### Reminders and morning summaries
 
@@ -65,7 +71,8 @@ An optional morning summary can report today's events and tasks, overdue tasks, 
 - Supabase is the source of truth. The assistant works with the Planner's existing `tasks`, `events`, `habits`, and `habit_completions` tables, plus the `telegram_users` account-link table.
 - Optional features use their own supporting tables, such as `ideas`, `reminders`, summary delivery records, and webhook session/receipt storage.
 - Planner tools look up the Supabase user ID through `telegram_users` and scope reads, updates, and deletes to that ID.
-- The service-role secret is used only by server-side code. Never expose it to browser code, commit it, or send it in chat.
+- The service-role secret is used only by server-side code. Because it is a privileged key, the typed tools must continue to scope every user operation by the linked `user_id`. Never expose the key to browser code, commit it, or send it in chat.
+- PostgreSQL table grants are also required: bypassing RLS does not grant SQL privileges by itself. The pairing SQL proposal grants the bot access to `telegram_users`, `tasks`, `events`, `habits`, and `habit_completions` while leaving RLS enabled.
 - `.env.local` and other local environment files are excluded by `.gitignore`; `.env.example` contains names and placeholders only.
 
 The SQL files under [`schema-proposals/`](schema-proposals/) are deployment and feature setup scripts. Review each against the target Supabase project before applying it; do not run them against an unrelated project.
@@ -112,7 +119,7 @@ The repository is configured for Vercel Node.js Functions. Telegram updates arri
 
 1. Import this GitHub repository into Vercel and deploy it as a Node.js project.
 2. In Vercel Project Settings → Environment Variables, configure the required secrets and `TELEGRAM_SESSION_STORE=supabase`.
-3. Apply [`schema-proposals/telegram-pairing.sql`](schema-proposals/telegram-pairing.sql) to the Planner Supabase project. It creates short-lived pairing-code functions and the required unique indexes. Keep RLS enabled.
+3. Apply [`schema-proposals/telegram-pairing.sql`](schema-proposals/telegram-pairing.sql) to the Planner Supabase project. It creates short-lived pairing-code functions, required unique indexes, and server-role grants for the Planner tables used by the bot. Keep RLS enabled.
 4. Apply [`schema-proposals/vercel-webhook-storage.sql`](schema-proposals/vercel-webhook-storage.sql) if it has not already been applied. It creates protected session and webhook receipt storage.
 5. Register the deployed `/api/telegram` URL with Telegram using `npm run set-webhook` from a local environment configured with the webhook URL and webhook secret.
 6. Add the Vercel cron endpoint URL and matching `CRON_SECRET` to Supabase Vault, then review and run [`schema-proposals/vercel-minute-cron.sql`](schema-proposals/vercel-minute-cron.sql) in the Supabase SQL Editor.
