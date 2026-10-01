@@ -1,5 +1,6 @@
 require("dotenv").config({ path: ".env.local" });
 
+const { createHash } = require("node:crypto");
 const { Telegraf, session } = require("telegraf");
 const OpenAI = require("openai");
 const { createClient } = require("@supabase/supabase-js");
@@ -46,19 +47,6 @@ const supabase = createClient(
   }
 );
 
-// OTP verification must not replace the privileged client's auth session.
-const supabaseAuth = createClient(
-  supabaseUrl,
-  requireEnv("SUPABASE_ANON_KEY"),
-  {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-      detectSessionInUrl: false,
-    },
-  }
-);
-
 // Persistent sessions are enabled for webhook deployments; local polling keeps
 // the existing in-memory behavior unless TELEGRAM_SESSION_STORE=supabase.
 const sessionStore = process.env.TELEGRAM_SESSION_STORE === "supabase"
@@ -78,6 +66,10 @@ function getSession(ctx) {
   }
 
   return ctx.session;
+}
+
+function hashPairingCode(code) {
+  return createHash("sha256").update(code, "utf8").digest("hex");
 }
 
 // ─────────────────────────────────────────────
@@ -111,13 +103,14 @@ bot.start(async (ctx) => {
     );
   }
 
-  session.step = "waiting_email";
+  session.step = "waiting_pairing_code";
 
   await ctx.reply(
     `Привет, ${ctx.from.first_name || "человек"} 👋\n\n` +
     `Я — твой личный помощник Planner.\n\n` +
-    `Чтобы подключить твой Planner к Telegram, ` +
-    `отправь email, с которым ты зарегистрирован в Planner.`
+    `Чтобы безопасно подключить аккаунт, открой Planner → Профиль → ` +
+    `«Создать код подключения». Затем отправь полученный код сюда.\n\n` +
+    `Если Planner ещё не открыт, сначала войди в него в браузере.`
   );
 });
 
@@ -134,197 +127,81 @@ bot.on("text", async (ctx) => {
     return ctx.reply("Подтверждение удаления отменено. Запись осталась в Planner.");
   }
 
+  if (text === "/cancel" && session.step === "waiting_pairing_code") {
+    delete session.step;
+    return ctx.reply("Подключение отменено. Когда будешь готов, отправь /start.");
+  }
+
   // Команды отдельно обрабатываются Telegram.
   if (text.startsWith("/")) return;
 
   const pendingDeletion = await confirmPlannerDeletion({ ctx, session, text });
   if (pendingDeletion?.handled) return ctx.reply(pendingDeletion.answer);
 
-  // ───────────────────────────────────────────
-  // ШАГ 1 — ждём email
-  // ───────────────────────────────────────────
-
-  if (session.step === "waiting_email") {
-    const email = text.toLowerCase();
-
-    // Простая проверка email.
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return ctx.reply(
-        "Похоже, это не email.\n\n" +
-        "Например:\n" +
-        "name@example.com"
-      );
-    }
-
-    try {
-      await ctx.sendChatAction("typing");
-
-      // Проверяем, существует ли пользователь с таким email.
-      let page = 1;
-      let user = null;
-
-      while (!user) {
-        const { data, error } = await supabase.auth.admin.listUsers({
-          page,
-          perPage: 1000,
-        });
-
-        if (error) {
-          console.error("Ошибка поиска пользователя:", error);
-          return ctx.reply("Не удалось проверить email. Попробуй ещё раз.");
-        }
-
-        user = data.users.find(
-          (candidate) => candidate.email?.toLowerCase() === email
-        ) || null;
-
-        if (user || data.users.length < 1000) break;
-        page += 1;
-      }
-
-      if (!user) {
-        return ctx.reply(
-          "Пользователь с таким email не найден.\n\n" +
-          "Убедись, что используешь тот email, " +
-          "с которым зарегистрирован в Planner."
-        );
-      }
-
-      // Сохраняем email и user_id в сессии.
-      session.email = email;
-      session.supabaseUserId = user.id;
-      session.step = "waiting_code";
-
-      // Отправляем OTP-код.
-      const { error: otpError } = await supabaseAuth.auth.signInWithOtp({
-        email,
-        options: {
-          shouldCreateUser: false,
-        },
-      });
-
-      if (otpError) {
-        console.error("Ошибка отправки OTP:", otpError);
-
-        session.step = "waiting_email";
-        session.email = null;
-        session.supabaseUserId = null;
-
-        return ctx.reply(
-          "Не получилось отправить код на email.\n\n" +
-          "Попробуй ещё раз."
-        );
-      }
-
-      return ctx.reply(
-        `Код отправлен на ${email} 📩\n\n` +
-        `Проверь почту и отправь сюда код из письма.`
-      );
-    } catch (error) {
-      console.error("Ошибка авторизации:", error);
-      return ctx.reply("Произошла ошибка. Попробуй ещё раз.");
-    }
+  if (session.step === "waiting_email" || session.step === "waiting_code") {
+    delete session.email;
+    delete session.supabaseUserId;
+    session.step = "waiting_pairing_code";
+    return ctx.reply(
+      "Способ подключения обновился. Открой Planner → Профиль → " +
+      "«Создать код подключения» и отправь код сюда."
+    );
   }
 
-  // ───────────────────────────────────────────
-  // ШАГ 2 — ждём OTP
-  // ───────────────────────────────────────────
+  if (session.step === "waiting_pairing_code") {
+    const code = text.replace(/[\s-]/g, "").toUpperCase();
 
-  if (session.step === "waiting_code") {
-    const code = text.replace(/\s/g, "");
-
-    if (!/^\d{6}$/.test(code)) {
+    if (!/^[A-HJ-NP-Z2-9]{16}$/.test(code)) {
       return ctx.reply(
-        "Код должен состоять из 6 цифр.\n\n" +
-        "Отправь код из письма ещё раз."
+        "Это не похоже на код подключения Planner.\n\n" +
+        "Создай новый код в Planner → Профиль и отправь его сюда."
       );
     }
 
     try {
       await ctx.sendChatAction("typing");
-
-      const { data, error } = await supabaseAuth.auth.verifyOtp({
-        email: session.email,
-        token: code,
-        type: "email",
+      const { data, error } = await supabase.rpc("consume_telegram_pairing_code", {
+        p_code_hash: hashPairingCode(code),
+        p_telegram_id: ctx.from.id,
+        p_telegram_username: ctx.from.username || null,
+        p_telegram_first_name: ctx.from.first_name || null,
       });
 
       if (error) {
-        console.error("Ошибка проверки OTP:", error);
+        console.error(`Telegram pairing failed (${String(error.code || error.name || "UNKNOWN").slice(0, 64)}).`);
+        return ctx.reply("Не удалось проверить код. Убедись, что в Planner уже создался код, и попробуй ещё раз.");
+      }
+
+      const status = data?.status;
+      if (status === "linked" || status === "already_linked") {
+        session.step = "connected";
+        delete session.email;
+        delete session.supabaseUserId;
 
         return ctx.reply(
-          "Код неверный или уже истёк.\n\n" +
-          "Попробуй получить новый код через /start."
+          `Готово! 🎉\n\n` +
+          `Telegram успешно подключён к твоему Planner.\n\n` +
+          `Теперь я смогу работать с твоими задачами, ` +
+          `событиями, привычками и идеями.`
         );
       }
 
-      const supabaseUserId = data.user?.id || session.supabaseUserId;
-
-      if (!supabaseUserId || supabaseUserId !== session.supabaseUserId) {
-        session.step = "waiting_email";
-        session.email = null;
-        session.supabaseUserId = null;
-
-        return ctx.reply(
-          "Не удалось определить пользователя Planner."
-        );
+      if (status === "telegram_already_linked") {
+        return ctx.reply("Этот Telegram уже подключён к другому Planner-аккаунту.");
       }
 
-      // Do not silently transfer a Planner account from another Telegram ID.
-      const { data: existingLink, error: lookupError } = await supabase
-        .from("telegram_users")
-        .select("telegram_id")
-        .eq("supabase_user_id", supabaseUserId)
-        .maybeSingle();
-
-      if (lookupError) {
-        console.error("Ошибка проверки привязки Planner:", lookupError);
-        return ctx.reply("Не удалось проверить привязку. Попробуй ещё раз.");
+      if (status === "planner_already_linked") {
+        return ctx.reply("Этот Planner уже подключён к другому Telegram-аккаунту.");
       }
 
-      if (existingLink && String(existingLink.telegram_id) !== String(ctx.from.id)) {
-        session.step = "waiting_email";
-        session.email = null;
-        session.supabaseUserId = null;
-
-        return ctx.reply(
-          "Этот Planner уже подключён к другому Telegram-аккаунту. " +
-          "Обратись в поддержку, чтобы изменить привязку."
-        );
+      if (status === "link_conflict") {
+        return ctx.reply("Не удалось завершить привязку из-за уже существующей связи. Обнови статус в Planner и попробуй снова.");
       }
 
-      // Insert only: a concurrent or existing Telegram link must not be overwritten.
-      const { error: linkError } = await supabase
-        .from("telegram_users")
-        .insert({
-          telegram_id: ctx.from.id,
-          supabase_user_id: supabaseUserId,
-          telegram_username: ctx.from.username || null,
-          telegram_first_name: ctx.from.first_name || null,
-        });
-
-      if (linkError) {
-        console.error("Ошибка привязки Telegram:", linkError);
-
-        return ctx.reply(
-          "Email подтверждён, но не удалось привязать Telegram.\n\n" +
-          "Попробуй ещё раз."
-        );
-      }
-
-      session.step = "connected";
-      delete session.email;
-      delete session.supabaseUserId;
-
-      return ctx.reply(
-        `Готово! 🎉\n\n` +
-        `Telegram успешно подключён к твоему Planner.\n\n` +
-        `Теперь я смогу работать с твоими задачами, ` +
-        `событиями, привычками и идеями.`
-      );
+      return ctx.reply("Код недействителен или истёк. Создай новый код в Planner → Профиль.");
     } catch (error) {
-      console.error("Ошибка подтверждения:", error);
-      return ctx.reply("Произошла ошибка. Попробуй ещё раз.");
+      console.error(`Telegram pairing failed (${String(error?.name || "UNKNOWN").slice(0, 64)}).`);
+      return ctx.reply("Не удалось подключить Planner. Попробуй создать новый код и отправить его ещё раз.");
     }
   }
 

@@ -42,12 +42,13 @@ flowchart LR
 
 ### Account linking
 
-1. The user starts the bot with `/start` and enters the email used for their Planner account.
-2. Supabase Auth sends a one-time code to that email.
-3. The bot verifies the code and records the Telegram ID to Supabase user ID mapping in `telegram_users`.
-4. Each Planner tool resolves the linked Supabase user ID and scopes its database operations to that user's records.
+1. The user signs in to Planner and opens **Profile → Create connection code**.
+2. Planner generates a random one-time code and asks Supabase to store only its SHA-256 hash for the signed-in user. The code expires after 10 minutes; a new code can be issued at most once per minute.
+3. The user sends `/start` to the Telegram bot and submits the code.
+4. A server-only Supabase function validates and consumes the code atomically, then records the Telegram ID to Supabase user ID mapping in `telegram_users`.
+5. Each Planner tool resolves the linked Supabase user ID and scopes its database operations to that user's records.
 
-The bot uses the Supabase anonymous key for OTP authentication and a server-only secret key for Planner data operations. These clients are separate so OTP sign-in cannot replace the privileged client's credentials.
+No email or SMTP setup is needed for Telegram linking. The Planner browser uses its public Supabase key for the signed-in user's pairing request; the bot uses the Supabase secret key only on the server to consume a code and perform Planner operations.
 
 ### Assistant requests
 
@@ -111,10 +112,11 @@ The repository is configured for Vercel Node.js Functions. Telegram updates arri
 
 1. Import this GitHub repository into Vercel and deploy it as a Node.js project.
 2. In Vercel Project Settings → Environment Variables, configure the required secrets and `TELEGRAM_SESSION_STORE=supabase`.
-3. Apply [`schema-proposals/vercel-webhook-storage.sql`](schema-proposals/vercel-webhook-storage.sql) to the Planner Supabase project if it has not already been applied. It creates protected session and webhook receipt storage.
-4. Register the deployed `/api/telegram` URL with Telegram using `npm run set-webhook` from a local environment configured with the webhook URL and webhook secret.
-5. Add the Vercel cron endpoint URL and matching `CRON_SECRET` to Supabase Vault, then review and run [`schema-proposals/vercel-minute-cron.sql`](schema-proposals/vercel-minute-cron.sql) in the Supabase SQL Editor.
-6. If morning summaries are wanted, enable them in Vercel environment settings and configure the schedule.
+3. Apply [`schema-proposals/telegram-pairing.sql`](schema-proposals/telegram-pairing.sql) to the Planner Supabase project. It creates short-lived pairing-code functions and the required unique indexes. Keep RLS enabled.
+4. Apply [`schema-proposals/vercel-webhook-storage.sql`](schema-proposals/vercel-webhook-storage.sql) if it has not already been applied. It creates protected session and webhook receipt storage.
+5. Register the deployed `/api/telegram` URL with Telegram using `npm run set-webhook` from a local environment configured with the webhook URL and webhook secret.
+6. Add the Vercel cron endpoint URL and matching `CRON_SECRET` to Supabase Vault, then review and run [`schema-proposals/vercel-minute-cron.sql`](schema-proposals/vercel-minute-cron.sql) in the Supabase SQL Editor.
+7. If morning summaries are wanted, enable them in Vercel environment settings and configure the schedule.
 
 Do not put secret values in this README, GitHub, screenshots, or chat. Enter them only in the local ignored `.env.local` file or the relevant provider's secret settings.
 
@@ -126,7 +128,6 @@ Do not put secret values in this README, GitHub, screenshots, or chat. Enter the
 | `OPENAI_API_KEY` | Yes | AI provider authentication |
 | `SUPABASE_URL` | Yes | Supabase project URL |
 | `SUPABASE_SECRET_KEY` | Yes, server only | Privileged server-side Planner operations |
-| `SUPABASE_ANON_KEY` | Yes | Supabase email one-time-code authentication |
 | `OPENAI_BASE_URL` | No | Override the default OpenAI API endpoint for a compatible provider |
 | `OPENAI_MODEL` | No | Model name; see `.env.example` for the configured default |
 | `TELEGRAM_SESSION_STORE` | Vercel webhook | Set to `supabase` for persistent serverless sessions |
