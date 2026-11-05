@@ -1,3 +1,5 @@
+**English** | [Русский](README.ru.md)
+
 # Planner AI Assistant
 
 An AI-powered Telegram interface for an existing personal planner. The assistant reads and updates Planner data in Supabase, so the web app and Telegram bot work with the same account and records.
