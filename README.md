@@ -2,7 +2,7 @@
 
 # Planner AI Assistant
 
-An AI-powered Telegram interface for an existing personal planner. The assistant reads and updates Planner data in Supabase, so the web app and Telegram bot work with the same account and records.
+A Telegram assistant for Planner. The assistant reads and updates Planner data in Supabase, so the web app and Telegram bot work with the same account and records.
 
 > This repository contains the Telegram assistant and its deployment configuration. The Planner web application is a separate project and remains the source of truth for planner data.
 
@@ -58,17 +58,17 @@ No email or SMTP setup is needed for Telegram linking. The Planner browser uses 
 
 ### Assistant requests
 
-Natural-language messages are sent to the configured OpenAI-compatible API. The model can select only declared Planner tools; each tool validates inputs and performs a scoped Supabase operation. Destructive task, event, and idea deletions are held for a separate user confirmation. Dates and event recurrences are interpreted using the configured planner timezone.
+Natural-language messages are sent to the configured OpenAI-compatible API. The model can select only declared Planner tools; each tool validates inputs and performs a scoped Supabase operation. Deleting a task, event or idea requires a separate user confirmation. Dates and event recurrences are interpreted using the configured planner timezone.
 
 The bot does not provide a separate `/help` command. Start or restart the conversation with `/start`; if the Telegram session was reset, the bot restores the existing account link from Supabase. Send `/cancel` while a pairing code or deletion confirmation is pending to abandon that step.
 
 ### Reminders and morning summaries
 
-Reminders are stored in Supabase and delivered by scheduled work. Supabase Cron calls the protected Vercel endpoint once per minute; the job checks for reminders that are due and sends only those. It does not send a notification just because a minute has passed. Reminder claims prevent concurrent workers from sending the same item twice.
+Reminders are stored in Supabase and delivered by scheduled work. Supabase Cron calls the protected Vercel endpoint once per minute; the job checks for reminders that are due and sends only those. Notifications are sent only for reminders that are due. Reminder claims prevent concurrent workers from sending the same item twice.
 
 An optional morning summary can report today's events and tasks, overdue tasks, and habit progress. It is disabled unless `MORNING_SUMMARY_ENABLED=true`. Delivery time and timezone are configurable. The summary is assembled from Planner data; it does not require a separate AI request.
 
-## Data and access boundaries
+## Data and access
 
 - Supabase is the source of truth. The assistant works with the Planner's existing `tasks`, `events`, `habits`, and `habit_completions` tables, plus the `telegram_users` account-link table.
 - Optional features use their own supporting tables, such as `ideas`, `reminders`, summary delivery records, and webhook session/receipt storage.
