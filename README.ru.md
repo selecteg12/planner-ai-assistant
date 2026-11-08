@@ -37,11 +37,11 @@ Telegram-ассистент для личного планировщика Plann
 ```mermaid
 flowchart LR
     U["Пользователь в Telegram"] --> T["Telegram Bot API"]
-    T --> V["Webhook-функция Vercel"]
+    T --> V["Обработчик Telegram webhook"]
     V --> B["Бот Telegraf"]
     B --> A["OpenAI-совместимая модель и инструменты Planner"]
     A --> S[("Данные Planner в Supabase")]
-    C["Supabase Cron"] --> J["Обработчик задач по расписанию в Vercel"]
+    C["Supabase Cron"] --> J["Обработчик задач по расписанию"]
     J --> S
     J --> T
 ```
@@ -53,7 +53,7 @@ flowchart LR
 1. Пользователь входит в Planner и открывает **Профиль → Создать код подключения**.
 2. Planner создаёт случайный одноразовый код. Для вошедшего пользователя Supabase сохраняет только его SHA-256 хеш. Код действует 10 минут; новый можно создать не чаще раза в минуту.
 3. Пользователь отправляет боту команду `/start`, затем код.
-4. Серверная функция Supabase проверяет и погашает код одной атомарной операцией, затем сохраняет соответствие Telegram ID и Supabase user ID в `telegram_users`.
+4. Серверная функция Supabase проверяет код и помечает его использованным в одной операции, затем сохраняет соответствие Telegram ID и Supabase user ID в `telegram_users`.
 5. Каждый инструмент Planner получает привязанный Supabase user ID и работает только с записями этого пользователя. Один Telegram-аккаунт связывается с одним аккаунтом Planner, и наоборот.
 
 Для привязки Telegram не нужны email или SMTP. Браузер Planner использует публичный ключ Supabase для запроса кода от имени вошедшего пользователя. Секретный ключ Supabase используется ботом только на сервере — для погашения кода и операций Planner.
@@ -66,7 +66,7 @@ flowchart LR
 
 ### Напоминания и утренние сводки
 
-Напоминания хранятся в Supabase и отправляются обработчиком по расписанию. Supabase Cron раз в минуту вызывает защищённый обработчик Vercel, который ищет наступившие напоминания и отправляет только их. Уведомлений о самом факте запуска нет. Механизм резервирования напоминаний защищает от повторной отправки одного пункта параллельными обработчиками.
+Напоминания хранятся в Supabase и отправляются обработчиком по расписанию. Supabase Cron раз в минуту вызывает защищённый обработчик. Тот отправляет напоминания, срок которых уже наступил, и защищает их от повторной отправки при параллельных запусках.
 
 Дополнительная утренняя сводка показывает события и задачи на сегодня, просроченные задачи и прогресс привычек. Она выключена, пока не задано `MORNING_SUMMARY_ENABLED=true`. Время доставки и часовой пояс настраиваются. Сводка собирается из данных Planner без отдельного запроса к ИИ.
 
@@ -91,7 +91,7 @@ flowchart LR
 | `task-tools.js`, `event-tools.js`, `habit-tools.js` | Операции с задачами, событиями и привычками с проверкой параметров |
 | `idea-tools.js`, `reminder-tools.js` | Идеи и разовые напоминания |
 | `scheduler.js`, `morning-summary.js` | Доставка наступивших напоминаний и утренних сводок |
-| `api/telegram.mjs` | Telegram webhook в Vercel и защита от повторной обработки обновлений |
+| `api/telegram.mjs` | Приём обновлений Telegram и защита от повторной обработки |
 | `api/cron.mjs` | Защищённый обработчик расписания и очистка записей webhook |
 | `supabase-session-store.js` | Постоянное хранилище Telegram-сессий для serverless-запусков |
 | `scripts/set-webhook.js` | Регистрация развёрнутого обработчика в Telegram |
@@ -113,23 +113,18 @@ flowchart LR
 3. Заполните обязательные переменные из таблицы ниже. Не добавляйте этот файл в Git.
 4. Запустите бота в режиме polling: `node bot.js`.
 
-Polling предназначен для локальной разработки. Развёрнутый экземпляр Vercel получает обновления через Telegram webhook.
+Для локального запуска бот сам запрашивает обновления у Telegram. При работе через webhook Telegram отправляет их на сервер.
 
 Автоматизированные тесты запускаются командой `npm test`.
 
-## Развёртывание на Vercel Hobby
+## Обработчики webhook и задач по расписанию
 
-Репозиторий настроен для Vercel Node.js Functions. Обновления Telegram принимает `api/telegram.mjs`. Задачи по расписанию обрабатывает `api/cron.mjs`, который вызывает Supabase Cron. Это позволяет не зависеть от ограничения Vercel Hobby на один запуск функции по расписанию в день.
+`api/telegram.mjs` принимает обновления от Telegram. `api/cron.mjs` отправляет напоминания и утренние сводки по вызову Supabase Cron.
 
-1. Импортируйте этот репозиторий GitHub в Vercel и разверните его как Node.js-проект.
-2. В **Vercel Project Settings → Environment Variables** укажите обязательные секреты и `TELEGRAM_SESSION_STORE=supabase`.
-3. Примените [`schema-proposals/telegram-pairing.sql`](schema-proposals/telegram-pairing.sql) к проекту Supabase, с которым работает Planner. Скрипт создаёт функции для короткоживущих кодов, уникальные индексы и разрешения серверной роли на таблицы Planner. Оставьте RLS включённым.
-4. Если ещё не применён [`schema-proposals/vercel-webhook-storage.sql`](schema-proposals/vercel-webhook-storage.sql), выполните его. Он создаёт защищённое хранилище сессий и полученных webhook-обновлений.
-5. Зарегистрируйте развёрнутый адрес `/api/telegram` в Telegram командой `npm run set-webhook` из локального окружения с настроенными URL и секретом webhook.
-6. Добавьте адрес обработчика Vercel и соответствующий `CRON_SECRET` в Supabase Vault. Затем проверьте и выполните [`schema-proposals/vercel-minute-cron.sql`](schema-proposals/vercel-minute-cron.sql) в Supabase SQL Editor.
-7. При необходимости включите утренние сводки в переменных Vercel и настройте расписание.
-
-Значения секретов нельзя помещать в README, GitHub, скриншоты или чат. Используйте локальный игнорируемый `.env.local` или настройки секретов соответствующего сервиса.
+- [`telegram-pairing.sql`](schema-proposals/telegram-pairing.sql) добавляет одноразовые коды для привязки аккаунтов. Для таблиц Planner нужны политики RLS.
+- [`vercel-webhook-storage.sql`](schema-proposals/vercel-webhook-storage.sql) добавляет хранилище сессий и обработанных обновлений. Его использует режим `TELEGRAM_SESSION_STORE=supabase`.
+- `npm run set-webhook` регистрирует в Telegram настроенный HTTPS-адрес обработчика. Запускать команду нужно после настройки адреса и секрета webhook.
+- [`vercel-minute-cron.sql`](schema-proposals/vercel-minute-cron.sql) задаёт расписание. Для него нужны адрес `/api/cron` и `CRON_SECRET` в Supabase Vault.
 
 ## Переменные окружения
 
@@ -141,8 +136,8 @@ Polling предназначен для локальной разработки.
 | `SUPABASE_SECRET_KEY` | Да, только сервер | Серверные операции Planner с расширенными правами |
 | `OPENAI_BASE_URL` | Нет | Адрес OpenAI-совместимого API вместо стандартного |
 | `OPENAI_MODEL` | Нет | Имя модели; настроенное значение по умолчанию указано в `.env.example` |
-| `TELEGRAM_SESSION_STORE` | Для webhook в Vercel | Значение `supabase` включает постоянное хранилище serverless-сессий |
-| `TELEGRAM_WEBHOOK_SECRET` | Для webhook в Vercel | Проверка запросов Telegram webhook |
+| `TELEGRAM_SESSION_STORE` | Для webhook | Значение `supabase` включает постоянное хранилище serverless-сессий |
+| `TELEGRAM_WEBHOOK_SECRET` | Для webhook | Проверка запросов Telegram webhook |
 | `TELEGRAM_WEBHOOK_URL` | Для локальной настройки webhook | Публичный HTTPS-адрес развёрнутого обработчика `/api/telegram` |
 | `CRON_SECRET` | Для задач по расписанию | Общий секрет для защиты `/api/cron` |
 | `PLANNER_TIMEZONE` | Нет | Часовой пояс планировщика; по умолчанию `Europe/Moscow` |

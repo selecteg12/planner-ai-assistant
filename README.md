@@ -30,18 +30,18 @@ Talk to the bot in natural language after connecting your Planner account. It ca
 
 The assistant uses a constrained set of typed tools to perform Planner operations. It does not expose arbitrary database queries to the language model.
 
-For example, after linking you can ask “Что у меня сегодня?”, “Покажи задачи на следующую неделю”, “Добавь задачу позвонить врачу завтра с высоким приоритетом”, or “Напомни мне отправить отчёт сегодня в 18:00”. The model can ask a follow-up question when required details, such as an event time, are missing.
+After linking your account, you can ask the bot what is planned for today, add a high-priority task for tomorrow, or set a reminder for 18:00. The bot asks for details if it needs them.
 
 ## How it works
 
 ```mermaid
 flowchart LR
     U[User in Telegram] --> T[Telegram Bot API]
-    T --> V[Vercel webhook function]
+    T --> V[Telegram webhook handler]
     V --> B[Telegraf bot]
     B --> A[OpenAI-compatible AI and Planner tools]
     A --> S[(Supabase Planner data)]
-    C[Supabase Cron] --> J[Vercel scheduled-work endpoint]
+    C[Supabase Cron] --> J[Scheduled job handler]
     J --> S
     J --> T
 ```
@@ -66,7 +66,7 @@ The bot does not provide a separate `/help` command. Start or restart the conver
 
 ### Reminders and morning summaries
 
-Reminders are stored in Supabase and delivered by scheduled work. Supabase Cron calls the protected Vercel endpoint once per minute; the job checks for reminders that are due and sends only those. Notifications are sent only for reminders that are due. Reminder claims prevent concurrent workers from sending the same item twice.
+Reminders are stored in Supabase and delivered by scheduled work. Supabase Cron calls the protected endpoint once per minute. The job sends due reminders and prevents concurrent workers from sending the same reminder twice.
 
 An optional morning summary can report today's events and tasks, overdue tasks, and habit progress. It is disabled unless `MORNING_SUMMARY_ENABLED=true`. Delivery time and timezone are configurable. The summary is assembled from Planner data; it does not require a separate AI request.
 
@@ -91,7 +91,7 @@ The SQL files under [`schema-proposals/`](schema-proposals/) are deployment and 
 | `task-tools.js`, `event-tools.js`, `habit-tools.js` | Validated task, event, and habit operations |
 | `idea-tools.js`, `reminder-tools.js` | Idea and one-time reminder operations |
 | `scheduler.js`, `morning-summary.js` | Due reminder delivery and optional morning summaries |
-| `api/telegram.mjs` | Vercel Telegram webhook endpoint and update de-duplication |
+| `api/telegram.mjs` | Receives Telegram updates and skips duplicates |
 | `api/cron.mjs` | Protected scheduled-work endpoint and webhook receipt cleanup |
 | `supabase-session-store.js` | Persistent Telegram session storage for serverless webhook runs |
 | `scripts/set-webhook.js` | Registers the deployed endpoint with Telegram |
@@ -113,23 +113,18 @@ The SQL files under [`schema-proposals/`](schema-proposals/) are deployment and 
 3. Fill the local file with the required environment values listed below. Keep it out of Git.
 4. Start the bot in polling mode: `node bot.js`.
 
-Polling mode is for local development. A deployed Vercel instance receives updates through the Telegram webhook instead.
+For local development, the bot polls Telegram for updates. With a webhook configured, Telegram sends updates to the server.
 
 Run the automated tests with `npm test`.
 
-## Deploy to Vercel Hobby
+## Webhook and scheduled jobs
 
-The repository is configured for Vercel Node.js Functions. Telegram updates arrive at `api/telegram.mjs`. Scheduled work runs through `api/cron.mjs`, called by Supabase Cron; this avoids relying on Vercel Hobby's once-daily scheduled function limit.
+`api/telegram.mjs` receives Telegram updates. `api/cron.mjs` sends reminders and morning summaries when called by Supabase Cron.
 
-1. Import this GitHub repository into Vercel and deploy it as a Node.js project.
-2. In Vercel Project Settings → Environment Variables, configure the required secrets and `TELEGRAM_SESSION_STORE=supabase`.
-3. Apply [`schema-proposals/telegram-pairing.sql`](schema-proposals/telegram-pairing.sql) to the Planner Supabase project. It creates short-lived pairing-code functions, required unique indexes, and server-role grants for the Planner tables used by the bot. Keep RLS enabled.
-4. Apply [`schema-proposals/vercel-webhook-storage.sql`](schema-proposals/vercel-webhook-storage.sql) if it has not already been applied. It creates protected session and webhook receipt storage.
-5. Register the deployed `/api/telegram` URL with Telegram using `npm run set-webhook` from a local environment configured with the webhook URL and webhook secret.
-6. Add the Vercel cron endpoint URL and matching `CRON_SECRET` to Supabase Vault, then review and run [`schema-proposals/vercel-minute-cron.sql`](schema-proposals/vercel-minute-cron.sql) in the Supabase SQL Editor.
-7. If morning summaries are wanted, enable them in Vercel environment settings and configure the schedule.
-
-Do not put secret values in this README, GitHub, screenshots, or chat. Enter them only in the local ignored `.env.local` file or the relevant provider's secret settings.
+- [`telegram-pairing.sql`](schema-proposals/telegram-pairing.sql) adds one-time pairing codes. The Planner tables require RLS policies.
+- [`vercel-webhook-storage.sql`](schema-proposals/vercel-webhook-storage.sql) adds storage for sessions and processed updates. Set `TELEGRAM_SESSION_STORE=supabase` to use it.
+- `npm run set-webhook` registers the handler's HTTPS URL with Telegram. Configure the webhook URL and secret before running it.
+- [`vercel-minute-cron.sql`](schema-proposals/vercel-minute-cron.sql) sets the schedule. It uses the `/api/cron` URL and `CRON_SECRET` stored in Supabase Vault.
 
 ## Environment variables
 
@@ -141,8 +136,8 @@ Do not put secret values in this README, GitHub, screenshots, or chat. Enter the
 | `SUPABASE_SECRET_KEY` | Yes, server only | Privileged server-side Planner operations |
 | `OPENAI_BASE_URL` | No | Override the default OpenAI API endpoint for a compatible provider |
 | `OPENAI_MODEL` | No | Model name; see `.env.example` for the configured default |
-| `TELEGRAM_SESSION_STORE` | Vercel webhook | Set to `supabase` for persistent serverless sessions |
-| `TELEGRAM_WEBHOOK_SECRET` | Vercel webhook | Verifies Telegram webhook requests |
+| `TELEGRAM_SESSION_STORE` | Webhook mode | Set to `supabase` for persistent serverless sessions |
+| `TELEGRAM_WEBHOOK_SECRET` | Webhook mode | Verifies Telegram webhook requests |
 | `TELEGRAM_WEBHOOK_URL` | Local webhook setup | Public HTTPS URL of the deployed `/api/telegram` endpoint |
 | `CRON_SECRET` | Scheduled work | Shared secret protecting `/api/cron` |
 | `PLANNER_TIMEZONE` | No | Planner timezone; defaults to `Europe/Moscow` |
