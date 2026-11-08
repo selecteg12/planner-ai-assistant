@@ -48,6 +48,8 @@ flowchart LR
 
 ### Account linking
 
+<img src="docs/screenshots/telegram-linking.png" alt="Telegram connection status in the Planner profile" width="460">
+
 1. The user signs in to Planner and opens **Profile → Create connection code**.
 2. Planner generates a random one-time code and asks Supabase to store only its SHA-256 hash for the signed-in user. The code expires after 10 minutes; a new code can be issued at most once per minute.
 3. The user sends `/start` to the Telegram bot and submits the code.
